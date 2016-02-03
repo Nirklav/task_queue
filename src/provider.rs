@@ -2,7 +2,7 @@ use std::sync::{ Arc, Condvar, Mutex };
 use std::vec::Vec;
 use std::cmp;
 
-use task_queue::Task;
+use super::Task;
 
 pub enum ProviderResult {
     Tasks(Vec<Task>),

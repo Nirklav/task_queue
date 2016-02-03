@@ -3,7 +3,7 @@
 //! # Examples
 //! ```
 //! extern crate task_queue;
-//! use task_queue;
+//!
 //! use std::sync::{ Arc, Mutex };
 //!
 //! let data = Arc::new(Mutex::new(0));
@@ -24,59 +24,136 @@
 //! }
 //! ```
 
-pub mod task_queue;
+pub mod error;
+mod provider;
 
-#[cfg(test)]
-mod test
-{
-    use std::sync::mpsc;
-    use std::sync::{ Arc, Mutex };
-    use task_queue;
+use std::thread::{ JoinHandle, Builder };
+use std::sync::{ Arc, Mutex, Condvar };
 
-    #[test]
-    fn test_work() {
-        let data = Arc::new(Mutex::new(0));
-        let (sender, reciver) = mpsc::channel::<i32>();
+use error::TaskQueueError;
+use provider::Provider;
+use provider::ProviderResult;
+use provider::Shared;
 
-        let mut queue = task_queue::TaskQueue::new();
-        for _ in 0..1000 {
-            let clone = data.clone();
-            let sender_clone = sender.clone();
+pub struct TaskQueue {
+    provider: Arc<Provider>,
 
-            queue.enqueue(move || {
-                let mut guard = clone.lock().unwrap();
-                sender_clone.send(*guard).unwrap();
+    shared: Arc<Mutex<Shared>>,
+    signal: Arc<Condvar>,
 
-                *guard += 1;
-            }).unwrap();
-        }
+    min_threads: i32,
+    max_threads: i32,
 
-        for i in 0..1000 {
-            let value = reciver.recv().unwrap();
-            assert_eq!(i, value);
+    threads: Vec<ThreadInfo>,
+    last_thread_id: i64
+}
+
+struct ThreadInfo {
+    handle: JoinHandle<()>,
+}
+
+pub struct Task {
+    value: Box<Fn() + Send + 'static>,
+}
+
+impl Task {
+    pub fn run(&self) {
+        (self.value)();
+    }
+}
+
+impl TaskQueue {
+    /// Create new task queue with 10 threads
+    pub fn new() -> TaskQueue {
+        TaskQueue::with_threads(10, 10)
+    }
+
+    /// Create new task quque with selected threads count
+    pub fn with_threads(min: i32, max: i32) -> TaskQueue {
+        let signal = Arc::new(Condvar::new());
+        let shared = Arc::new(Mutex::new(Shared {
+            tasks: Vec::new(),
+            stop: false,
+        }));
+
+        TaskQueue {
+            provider: Arc::new(Provider::new(shared.clone(), signal.clone())),
+            shared: shared,
+            signal: signal,
+            min_threads: min,
+            max_threads: max,
+            threads: Vec::new(),
+            last_thread_id: 0
         }
     }
 
-    #[test]
-    fn test_stop() {
-        let data = Arc::new(Mutex::new(0));
-        let mut queue = task_queue::TaskQueue::new();
+    /// Schedule task in queue
+    pub fn enqueue<F>(&mut self, f: F) -> Result<(), TaskQueueError> where F: Fn() + Send + 'static, {
+        let task = Task { value: Box::new(f) };
 
-        for _ in 0..1000 {
-            let clone = data.clone();
-
-            queue.enqueue(move || {
-                let mut guard = clone.lock().unwrap();
-                *guard += 1;
-            }).unwrap();
+        {
+            let mut guard = self.shared.lock().expect("Mutex is poison (TaskQueue.enqueue lock)");
+            guard.tasks.push(task);
         }
 
-        let not_executed_tasks = queue.stop().unwrap();
-        for t in &not_executed_tasks {
-            t.run();
+        self.run()
+    }
+
+    fn run(&mut self) -> Result<(), TaskQueueError> {
+        let len = self.threads.len();
+        if len > 0 {
+            self.signal.notify_all();
+            return Ok(());
         }
 
-        let num = data.lock().unwrap();
-        assert_eq!(*num, 1000);
+        for _ in 0..self.min_threads {
+            let info = try!(self.build_and_run());
+            self.threads.push(info);
+        }
+
+        Ok(())
+    }
+
+    fn build_and_run(&mut self) -> Result<ThreadInfo, TaskQueueError> {
+        self.last_thread_id += 1;
+
+        let provider_clone = self.provider.clone();
+        let handle = try!(Builder::new()
+            .name(format!("TaskQueue::thread {}", self.last_thread_id))
+            .spawn(move || TaskQueue::thread_update(provider_clone)));
+
+        Ok(ThreadInfo { handle: handle })
+    }
+
+    fn thread_update(provider: Arc<Provider>) {
+        loop {
+            let tasks = match provider.get() {
+                ProviderResult::Tasks(v) => v,
+                ProviderResult::Stop => return
+            };
+
+            for task in tasks {
+                task.run();
+            }
+        }
+    }
+
+    /// Stops tasks queue work and return are not completed tasks
+    pub fn stop(self) -> Result<Vec<Task>, TaskQueueError> {
+        let tasks : Vec<Task>;
+        {
+            let mut guard = self.shared.lock().expect("Mutex is poison (TaskQueue.stop lock)");
+            guard.stop = true;
+            tasks = guard.tasks.drain(..).collect();
+        }
+        self.signal.notify_all();
+
+        for info in self.threads {
+            if let Err(_) = info.handle.join() {
+                return Err(TaskQueueError::Join);
+            }
+        }
+
+        Ok(tasks)
     }
 }
