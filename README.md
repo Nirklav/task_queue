@@ -2,6 +2,11 @@
 The implementation of the thread pool for Rust
 Library supports dynamic control over the number of threads
 
+``` toml
+[dependencies]
+task_queue = "0.0.1"
+```
+
 ``` rust
 extern crate task_queue;
 use std::sync::{ Arc, Mutex };
