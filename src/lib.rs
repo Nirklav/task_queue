@@ -25,41 +25,27 @@
 //! ```
 
 pub mod error;
-mod provider;
+pub mod spawn_policy;
+mod pipe;
 
 use std::thread::{ JoinHandle, Builder };
-use std::sync::{ Arc, Mutex, Condvar };
 
 use error::TaskQueueError;
-use provider::Provider;
-use provider::ProviderResult;
-use provider::Shared;
+use pipe::Sender;
+use pipe::Reciver;
+use pipe::ReciverHandle;
+use spawn_policy::SpawnPolicy;
+use spawn_policy::StaticSpawnPolicy;
 
 pub struct TaskQueue {
-    provider: Arc<Provider>,
+    sender: Sender<Message>,
 
-    shared: Arc<Mutex<Shared>>,
-    signal: Arc<Condvar>,
-
-    min_threads: i32,
-    max_threads: i32,
+    policy: Box<SpawnPolicy>,
+    min_threads: usize,
+    max_threads: usize,
 
     threads: Vec<ThreadInfo>,
     last_thread_id: i64
-}
-
-struct ThreadInfo {
-    handle: JoinHandle<()>,
-}
-
-pub struct Task {
-    value: Box<Fn() + Send + 'static>,
-}
-
-impl Task {
-    pub fn run(&self) {
-        (self.value)();
-    }
 }
 
 impl TaskQueue {
@@ -69,17 +55,10 @@ impl TaskQueue {
     }
 
     /// Create new task quque with selected threads count
-    pub fn with_threads(min: i32, max: i32) -> TaskQueue {
-        let signal = Arc::new(Condvar::new());
-        let shared = Arc::new(Mutex::new(Shared {
-            tasks: Vec::new(),
-            stop: false,
-        }));
-
+    pub fn with_threads(min: usize, max: usize) -> TaskQueue {
         TaskQueue {
-            provider: Arc::new(Provider::new(shared.clone(), signal.clone())),
-            shared: shared,
-            signal: signal,
+            sender: Sender::<Message>::new(),
+            policy: Box::new(StaticSpawnPolicy::new()),
             min_threads: min,
             max_threads: max,
             threads: Vec::new(),
@@ -90,25 +69,26 @@ impl TaskQueue {
     /// Schedule task in queue
     pub fn enqueue<F>(&mut self, f: F) -> Result<(), TaskQueueError> where F: Fn() + Send + 'static, {
         let task = Task { value: Box::new(f) };
+        self.sender.put(Message::Task(task));
 
-        {
-            let mut guard = self.shared.lock().expect("Mutex is poison (TaskQueue.enqueue lock)");
-            guard.tasks.push(task);
-        }
+        let count = self.policy.get_count(self);
+        let mut runned = self.threads.len();
 
-        self.run()
-    }
+        if count > runned {
+            for _ in runned..count {
+                let info = try!(self.build_and_run());
+                self.threads.push(info);
+            }
+        } else {
+            loop {
+                if runned == count {
+                    break;
+                }
 
-    fn run(&mut self) -> Result<(), TaskQueueError> {
-        let len = self.threads.len();
-        if len > 0 {
-            self.signal.notify_all();
-            return Ok(());
-        }
-
-        for _ in 0..self.min_threads {
-            let info = try!(self.build_and_run());
-            self.threads.push(info);
+                let info = self.threads.remove(0);
+                self.sender.put_for(info.reciver, Message::CloseThread);
+                runned -= 1;
+            }
         }
 
         Ok(())
@@ -117,36 +97,32 @@ impl TaskQueue {
     fn build_and_run(&mut self) -> Result<ThreadInfo, TaskQueueError> {
         self.last_thread_id += 1;
 
-        let provider_clone = self.provider.clone();
-        let handle = try!(Builder::new()
-            .name(format!("TaskQueue::thread {}", self.last_thread_id))
-            .spawn(move || TaskQueue::thread_update(provider_clone)));
+        let name = format!("TaskQueue::thread {}", self.last_thread_id);
+        let reciver = self.sender.create_reciver();
+        let reciver_handle = reciver.handle();
 
-        Ok(ThreadInfo { handle: handle })
+        let handle = try!(Builder::new()
+            .name(name)
+            .spawn(move || TaskQueue::thread_update(reciver)));
+
+        Ok(ThreadInfo::new(reciver_handle, handle))
     }
 
-    fn thread_update(provider: Arc<Provider>) {
+    fn thread_update(reciver: Reciver<Message>) {
         loop {
-            let tasks = match provider.get() {
-                ProviderResult::Tasks(v) => v,
-                ProviderResult::Stop => return
-            };
-
-            for task in tasks {
-                task.run();
+            let message = reciver.get();
+            match message {
+                Message::Task(t) => t.run(),
+                Message::CloseThread => return,
             }
         }
     }
 
     /// Stops tasks queue work and return are not completed tasks
     pub fn stop(self) -> Result<Vec<Task>, TaskQueueError> {
-        let tasks : Vec<Task>;
-        {
-            let mut guard = self.shared.lock().expect("Mutex is poison (TaskQueue.stop lock)");
-            guard.stop = true;
-            tasks = guard.tasks.drain(..).collect();
+        for info in &self.threads {
+            self.sender.put_for(info.reciver.clone(), Message::CloseThread);
         }
-        self.signal.notify_all();
 
         for info in self.threads {
             if let Err(_) = info.handle.join() {
@@ -154,6 +130,66 @@ impl TaskQueue {
             }
         }
 
-        Ok(tasks)
+        let not_executed = self.sender.cancel_all();
+        let mut result = Vec::<Task>::new();
+        for m in not_executed {
+            let task = match m {
+                Message::Task(t) => t,
+                Message::CloseThread => panic!("This should never happen")
+            };
+
+            result.push(task);
+        }
+
+        Ok(result)
+    }
+
+    /// returns threads count
+    pub fn get_threads_count(&self) -> usize {
+        self.threads.len()
+    }
+
+    /// return max threads count
+    pub fn get_max_threads(&self) -> usize {
+        self.max_threads
+    }
+
+    /// return min threads count
+    pub fn get_min_threads(&self) -> usize {
+        self.min_threads
+    }
+
+    /// sets a policy for controlling the amount of threads
+    pub fn set_spawn_policy(&mut self, policy: Box<SpawnPolicy>) {
+        self.policy = policy;
+    }
+}
+
+struct ThreadInfo {
+    reciver: ReciverHandle,
+    handle: JoinHandle<()>,
+}
+
+impl ThreadInfo {
+    fn new(reciver: ReciverHandle, handle: JoinHandle<()>) -> ThreadInfo {
+        ThreadInfo {
+            reciver: reciver,
+            handle: handle
+        }
+    }
+}
+
+enum Message {
+    Task(Task),
+    CloseThread,
+}
+
+pub struct Task {
+    value: Box<Fn() + Send + 'static>,
+}
+
+impl Task {
+    pub fn run(&self) {
+        (self.value)();
     }
 }
