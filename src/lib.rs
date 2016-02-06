@@ -1,7 +1,21 @@
 //! Task queue
+//! The implementation of the thread pool for Rust
+//! Library supports dynamic control over the number of threads
+//! For implement it you should use SpawnPolicy trait
+//!
+//! For example it StaticSpawnPolicy implementation:
+//! ``` rust
+//! pub struct StaticSpawnPolicy;
+//!
+//! impl SpawnPolicy for StaticSpawnPolicy {
+//!     fn get_count(&self, queue: &TaskQueue) -> usize {
+//!         queue.max_threads
+//!     }
+//! }
+//! ```
 //!
 //! # Examples
-//! ```
+//! ``` rust
 //! extern crate task_queue;
 //!
 //! use std::sync::{ Arc, Mutex };
