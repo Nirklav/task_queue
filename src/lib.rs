@@ -30,14 +30,20 @@
 //!
 //! For example StaticSpawnPolicy implementation:
 //! # Example
-//! ``` rust
+//! ```
+//! use task_queue::TaskQueue;
+//! use task_queue::spawn_policy::SpawnPolicy;
+//!
 //! pub struct StaticSpawnPolicy;
 //!
 //! impl SpawnPolicy for StaticSpawnPolicy {
 //!     fn get_count(&self, queue: &TaskQueue) -> usize {
-//!         queue.max_threads
+//!         queue.get_max_threads()
 //!     }
 //! }
+//! #
+//! # fn main() {
+//! # }
 //! ```
 
 pub mod error;
