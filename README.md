@@ -1,6 +1,7 @@
 # task_queue
-The implementation of the thread pool for Rust
-Library supports dynamic control over the number of threads
+The implementation of the thread pool for Rust.
+
+Library supports dynamic control over the number of threads.
 
 [Documentation](http://nirklav.github.io/task_queue/task_queue/index.html)
 
