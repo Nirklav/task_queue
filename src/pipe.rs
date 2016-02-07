@@ -1,9 +1,9 @@
 use std::sync::{ Arc, Condvar, Mutex };
-use std::vec::Vec;
-use std::iter::Iterator;
+use std::sync::atomic::{ AtomicUsize, Ordering };
 
 pub struct Sender<T> {
     shared: Arc<Mutex<Vec<Message<T>>>>,
+    count: Arc<AtomicUsize>,
     signal: Arc<Condvar>,
     last_handle: ReciverHandle,
 }
@@ -11,9 +11,10 @@ pub struct Sender<T> {
 impl<T> Sender<T> {
     pub fn new() -> Sender<T> {
         Sender {
-            last_handle: ReciverHandle::new(),
             shared: Arc::new(Mutex::new(Vec::new())),
-            signal: Arc::new(Condvar::new())
+            count: Arc::new(AtomicUsize::new(0)),
+            signal: Arc::new(Condvar::new()),
+            last_handle: ReciverHandle::new(),
         }
     }
 
@@ -40,6 +41,7 @@ impl<T> Sender<T> {
             guard.push(msg);
         }
 
+        self.count.fetch_add(1, Ordering::SeqCst);
         self.signal.notify_all();
     }
 
@@ -48,11 +50,16 @@ impl<T> Sender<T> {
         let result = guard.drain(..).map(|m| m.data).collect();
         result
     }
+
+    pub fn size(&self) -> usize {
+        self.count.load(Ordering::Relaxed)
+    }
 }
 
 pub struct Reciver<T> {
     handle: ReciverHandle,
     shared: Arc<Mutex<Vec<Message<T>>>>,
+    count: Arc<AtomicUsize>,
     signal: Arc<Condvar>,
 }
 
@@ -61,7 +68,8 @@ impl<T> Reciver<T> {
         Reciver {
             handle: sender.last_handle.next(),
             shared: sender.shared.clone(),
-            signal: sender.signal.clone()
+            count: sender.count.clone(),
+            signal: sender.signal.clone(),
         }
     }
 
@@ -76,6 +84,7 @@ impl<T> Reciver<T> {
             });
 
             if let Some(i) = index {
+                self.count.fetch_sub(1, Ordering::SeqCst);
                 return guard.remove(i).data;
             }
 

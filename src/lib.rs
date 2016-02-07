@@ -1,20 +1,7 @@
 //! Task queue
-//! The implementation of the thread pool for Rust
-//! Library supports dynamic control over the number of threads
-//! For implement it you should use SpawnPolicy trait
+//! The implementation of the thread pool for Rust.
 //!
-//! For example it StaticSpawnPolicy implementation:
-//! ``` rust
-//! pub struct StaticSpawnPolicy;
-//!
-//! impl SpawnPolicy for StaticSpawnPolicy {
-//!     fn get_count(&self, queue: &TaskQueue) -> usize {
-//!         queue.max_threads
-//!     }
-//! }
-//! ```
-//!
-//! # Examples
+//! # Example
 //! ``` rust
 //! extern crate task_queue;
 //!
@@ -35,6 +22,21 @@
 //! let not_executed_tasks = queue.stop().unwrap();
 //! for t in &not_executed_tasks {
 //!     t.run();
+//! }
+//! ```
+//!
+//! Library supports dynamic control over the number of threads.
+//! For implement it you should use SpawnPolicy trait.
+//!
+//! For example StaticSpawnPolicy implementation:
+//! # Example
+//! ``` rust
+//! pub struct StaticSpawnPolicy;
+//!
+//! impl SpawnPolicy for StaticSpawnPolicy {
+//!     fn get_count(&self, queue: &TaskQueue) -> usize {
+//!         queue.max_threads
+//!     }
 //! }
 //! ```
 
@@ -158,24 +160,29 @@ impl TaskQueue {
         Ok(result)
     }
 
-    /// returns threads count
+    /// Returns current threads count
     pub fn get_threads_count(&self) -> usize {
         self.threads.len()
     }
 
-    /// return max threads count
+    /// Return max threads count
     pub fn get_max_threads(&self) -> usize {
         self.max_threads
     }
 
-    /// return min threads count
+    /// Return min threads count
     pub fn get_min_threads(&self) -> usize {
         self.min_threads
     }
 
-    /// sets a policy for controlling the amount of threads
+    /// Sets a policy for controlling the amount of threads
     pub fn set_spawn_policy(&mut self, policy: Box<SpawnPolicy>) {
         self.policy = policy;
+    }
+
+    /// Gets tasks count in queue
+    pub fn tasks_count(&self) -> usize {
+        self.sender.size()
     }
 }
 
