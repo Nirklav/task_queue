@@ -1,3 +1,6 @@
 target
 .atom-build.json
 cargo.lock
+
+Cargo.lock
+Cargo.lock

@@ -23,17 +23,14 @@ impl<T> Sender<T> {
     }
 
     pub fn put(&self, data: T) {
-        self.put_impl(Option::None, data);
+        self.put_with_priority(None, Priority::Normal, data);
     }
 
-    pub fn put_for(&self, target: ReciverHandle, data: T) {
-        self.put_impl(Option::Some(target), data);
-    }
-
-    fn put_impl(&self, target: Option<ReciverHandle>, data: T) {
+    pub fn put_with_priority(&self, target: Option<ReciverHandle>, priority: Priority, data: T) {
         let msg = Message {
             target: target,
-            data: data
+            priority: priority,
+            data: data,
         };
 
         {
@@ -76,28 +73,50 @@ impl<T> Reciver<T> {
     pub fn get(&self) -> T {
         let mut guard = self.shared.lock().expect("Mutex is poison");
         loop {
-            let index = guard.iter().position(|ref m| {
-                if let Some(ref h) = m.target {
-                    return h == &self.handle;
-                }
-                true
-            });
+            let mut index: Option<usize> = None;
+            let mut priority = Priority::Normal;
 
-            if let Some(i) = index {
-                self.count.fetch_sub(1, Ordering::SeqCst);
-                return guard.remove(i).data;
+            for (i, msg) in guard.iter().enumerate() {
+                // Skip messages for other recivers
+                if let Some(ref target) = msg.target {
+                    if target != &self.handle {
+                        continue;
+                    }
+                }
+
+                // Select first
+                if index == None {
+                    index = Some(i);
+                    priority = msg.priority;
+                    continue;
+                }
+
+                // Select msg with max priority
+                if priority < msg.priority {
+                    index = Some(i);
+                    priority = msg.priority;
+                }
             }
 
+            // Return message if found
+            if let Some(i) = index {
+                self.count.fetch_sub(1, Ordering::SeqCst);
+
+                let msg = guard.remove(i);
+                return msg.data;
+            }
+
+            // Wait if message not found
             guard = self.signal.wait(guard).expect("Mutex is posion");
         }
     }
 
     pub fn handle(&self) -> ReciverHandle {
-        self.handle.clone()
+        self.handle
     }
 }
 
-#[derive(Eq, PartialEq, Clone)]
+#[derive(Eq, PartialEq, Copy, Clone)]
 pub struct ReciverHandle {
     id: i64,
 }
@@ -116,8 +135,16 @@ impl ReciverHandle {
     }
 }
 
+#[derive(PartialOrd, PartialEq, Copy, Clone)]
+pub enum Priority {
+    Min = -1,
+    Normal = 0,
+    High = 1,
+}
+
 struct Message<T> {
     target: Option<ReciverHandle>,
+    priority: Priority,
     data: T,
 }
 
@@ -125,6 +152,7 @@ struct Message<T> {
 mod test {
     use super::Sender;
     use super::ReciverHandle;
+    use super::Priority;
     use std::thread;
     use std::thread::JoinHandle;
     use std::sync::{ Arc, Mutex };
@@ -196,13 +224,35 @@ mod test {
 
         let mut value : i32 = 0;
         for handle in handles {
-            sender.put_for(handle, value);
+            sender.put_with_priority(Some(handle), Priority::Normal, value);
             value += 1;
         }
 
         for h in threads {
             h.join().unwrap();
         }
+    }
+
+    #[test]
+    fn test_put_for_priority() {
+        let mut sender = Sender::<i32>::new();
+        let reciver = sender.create_reciver();
+        let reciver_handle = reciver.handle();
+
+        for i in 0..10 {
+            sender.put(i);
+        }
+        sender.put_with_priority(Some(reciver_handle), Priority::High, 300);
+
+        let handle = thread::spawn(move || {
+            assert_eq!(300, reciver.get());
+
+            for i in 0..10 {
+                assert_eq!(i, reciver.get());
+            }
+        });
+
+        handle.join().unwrap();
     }
 
     #[test]

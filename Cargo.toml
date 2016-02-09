@@ -1,11 +1,12 @@
 [package]
 name = "task_queue"
-version = "0.0.1"
+version = "0.0.2"
 authors = ["Nirklav <antonvictorovich93@gmail.com>"]
 description = "The implementation of the thread pool for Rust"
 repository = "https://github.com/Nirklav/task_queue"
 homepage = "https://github.com/Nirklav/task_queue"
 documentation = "http://nirklav.github.io/task_queue/task_queue/index.html"
 license = "MIT"
+keywords = ["threadpool"]
 
 [dependencies]

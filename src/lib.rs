@@ -19,7 +19,7 @@
 //!    }).unwrap();
 //! }
 //!
-//! let not_executed_tasks = queue.stop().unwrap();
+//! let not_executed_tasks = queue.stop_immediately().unwrap();
 //! for t in &not_executed_tasks {
 //!     t.run();
 //! }
@@ -56,6 +56,7 @@ use error::TaskQueueError;
 use pipe::Sender;
 use pipe::Reciver;
 use pipe::ReciverHandle;
+use pipe::Priority;
 use spawn_policy::SpawnPolicy;
 use spawn_policy::StaticSpawnPolicy;
 
@@ -108,7 +109,7 @@ impl TaskQueue {
                 }
 
                 let info = self.threads.remove(0);
-                self.sender.put_for(info.reciver, Message::CloseThread);
+                self.sender.put_with_priority(Some(info.reciver), Priority::High, Message::CloseThread);
                 runned -= 1;
             }
         }
@@ -140,18 +141,41 @@ impl TaskQueue {
         }
     }
 
-    /// Stops tasks queue work and return are not completed tasks
-    pub fn stop(self) -> Result<Vec<Task>, TaskQueueError> {
+    /// Stops tasks queue work.
+    /// All task in queue will be completed by threads.
+    pub fn stop(mut self) -> Vec<JoinHandle<()>> {
+        self.stop_impl()
+    }
+
+    fn stop_impl(&mut self) -> Vec<JoinHandle<()>> {
+        // Close threads only after all tasks
         for info in &self.threads {
-            self.sender.put_for(info.reciver.clone(), Message::CloseThread);
+            self.sender.put_with_priority(Some(info.reciver), Priority::Min, Message::CloseThread);
         }
 
-        for info in self.threads {
+        self.threads
+            .drain(..)
+            .map(|t| t.handle)
+            .collect()
+    }
+
+    /// Stops tasks queue work immediately and return are not completed tasks
+    pub fn stop_immediately(mut self) -> Result<Vec<Task>, TaskQueueError> {
+        let threads : Vec<ThreadInfo> = self.threads.drain(..).collect();
+
+        // Close threads immediately
+        for info in &threads {
+            self.sender.put_with_priority(Some(info.reciver), Priority::High, Message::CloseThread);
+        }
+
+        // Wait threads
+        for info in threads {
             if let Err(_) = info.handle.join() {
                 return Err(TaskQueueError::Join);
             }
         }
 
+        // Cancel all tasks, and check it
         let not_executed = self.sender.cancel_all();
         let mut result = Vec::<Task>::new();
         for m in not_executed {
@@ -189,6 +213,13 @@ impl TaskQueue {
     /// Gets tasks count in queue
     pub fn tasks_count(&self) -> usize {
         self.sender.size()
+    }
+}
+
+impl Drop for TaskQueue {
+    /// All task in queue will be completed by threads.
+    fn drop(&mut self) {
+        self.stop_impl();
     }
 }
 
