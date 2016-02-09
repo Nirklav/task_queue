@@ -10,7 +10,7 @@ Library supports dynamic control over the number of threads.
 Add this to your Cargo.toml:
 ``` toml
 [dependencies]
-task_queue = "0.0.1"
+task_queue = "0.0.2"
 ```
 and this to your crate root:
 ``` rust
