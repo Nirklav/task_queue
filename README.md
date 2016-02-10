@@ -27,16 +27,16 @@ let data = Arc::new(Mutex::new(0));
 let mut queue = task_queue::TaskQueue::new();
 
 for _ in 0..1000 {
-  let clone = data.clone();
+   let clone = data.clone();
 
-  queue.enqueue(move || {
-      let mut guard = clone.lock().unwrap();
-      *guard += 1;
-  }).unwrap();
+   queue.enqueue(move || {
+       let mut guard = clone.lock().unwrap();
+       *guard += 1;
+   }).unwrap();
 }
 
-let not_executed_tasks = queue.stop().unwrap();
+let not_executed_tasks = queue.stop_immediately().unwrap();
 for t in &not_executed_tasks {
-   t.run();
+    t.run();
 }
 ```
