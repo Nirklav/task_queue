@@ -25,6 +25,19 @@ fn test_work() {
 }
 
 #[test]
+fn test_stop_and_wait() {
+    let mut queue = task_queue::TaskQueue::new();
+
+    for _ in 0..10 {
+       queue.enqueue(move || {
+
+       }).unwrap();
+    }
+
+    queue.stop_wait();
+}
+
+#[test]
 fn test_stop() {
     let data = Arc::new(AtomicUsize::new(0));
 
@@ -76,7 +89,7 @@ fn test_stop_immediately() {
         }).unwrap();
     }
 
-    let not_executed_tasks = queue.stop_immediately().unwrap();
+    let not_executed_tasks = queue.stop_immediately();
     for t in &not_executed_tasks {
         t.run();
     }

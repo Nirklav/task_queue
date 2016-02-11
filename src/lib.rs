@@ -5,24 +5,14 @@
 //! ``` rust
 //! extern crate task_queue;
 //!
-//! use std::sync::{ Arc, Mutex };
-//!
-//! let data = Arc::new(Mutex::new(0));
 //! let mut queue = task_queue::TaskQueue::new();
 //!
-//! for _ in 0..1000 {
-//!    let clone = data.clone();
-//!
+//! for _ in 0..10 {
 //!    queue.enqueue(move || {
-//!        let mut guard = clone.lock().unwrap();
-//!        *guard += 1;
+//!        println!("Hi from pool")
 //!    }).unwrap();
 //! }
-//!
-//! let not_executed_tasks = queue.stop_immediately().unwrap();
-//! for t in &not_executed_tasks {
-//!     t.run();
-//! }
+//! # queue.stop_wait();
 //! ```
 //!
 //! Library supports dynamic control over the number of threads.
@@ -90,6 +80,18 @@ impl TaskQueue {
     }
 
     /// Schedule task in queue
+    /// ``` rust
+    /// extern crate task_queue;
+    ///
+    /// let mut queue = task_queue::TaskQueue::new();
+    ///
+    /// for _ in 0..10 {
+    ///    queue.enqueue(move || {
+    ///        println!("Hi from pool")
+    ///    }).unwrap();
+    /// }
+    /// # queue.stop_wait();
+    /// ```
     pub fn enqueue<F>(&mut self, f: F) -> Result<(), TaskQueueError> where F: Fn() + Send + 'static, {
         let task = Task { value: Box::new(f) };
         self.sender.put(Message::Task(task));
@@ -143,8 +145,50 @@ impl TaskQueue {
 
     /// Stops tasks queue work.
     /// All task in queue will be completed by threads.
+    /// Method not block current thread work, but returns threads joinHandles.
+    ///
+    /// # Examples
+    /// ``` rust
+    /// extern crate task_queue;
+    ///
+    /// let mut queue = task_queue::TaskQueue::new();
+    ///
+    /// for _ in 0..10 {
+    ///    queue.enqueue(move || {
+    ///        println!("Hi from pool")
+    ///    }).unwrap();
+    /// }
+    /// let handles = queue.stop();
+    /// for h in handles {
+    ///     h.join().unwrap();
+    /// }
+    /// ```
     pub fn stop(mut self) -> Vec<JoinHandle<()>> {
         self.stop_impl()
+    }
+
+    /// Stops tasks queue work.
+    /// All task in queue will be completed by threads.
+    /// Method block current thread work.
+    ///
+    /// # Examples
+    /// ``` rust
+    /// extern crate task_queue;
+    ///
+    /// let mut queue = task_queue::TaskQueue::new();
+    ///
+    /// for _ in 0..10 {
+    ///    queue.enqueue(move || {
+    ///        println!("Hi from pool")
+    ///    }).unwrap();
+    /// }
+    /// queue.stop_wait();
+    /// ```
+    pub fn stop_wait(mut self) {
+        let handles = self.stop_impl();
+        for h in handles {
+            h.join().expect("Join error");
+        }
     }
 
     fn stop_impl(&mut self) -> Vec<JoinHandle<()>> {
@@ -160,7 +204,24 @@ impl TaskQueue {
     }
 
     /// Stops tasks queue work immediately and return are not completed tasks
-    pub fn stop_immediately(mut self) -> Result<Vec<Task>, TaskQueueError> {
+    /// Stops tasks queue work.
+    /// # Examples
+    /// ``` rust
+    /// extern crate task_queue;
+    ///
+    /// let mut queue = task_queue::TaskQueue::new();
+    ///
+    /// for _ in 0..10 {
+    ///    queue.enqueue(move || {
+    ///        println!("Hi from pool")
+    ///    }).unwrap();
+    /// }
+    /// let not_completed = queue.stop_immediately();
+    /// for t in &not_completed {
+    ///     t.run();
+    /// }
+    /// ```
+    pub fn stop_immediately(mut self) -> Vec<Task> {
         let threads : Vec<ThreadInfo> = self.threads.drain(..).collect();
 
         // Close threads immediately
@@ -170,9 +231,7 @@ impl TaskQueue {
 
         // Wait threads
         for info in threads {
-            if let Err(_) = info.handle.join() {
-                return Err(TaskQueueError::Join);
-            }
+            info.handle.join().expect("Join error");
         }
 
         // Cancel all tasks, and check it
@@ -187,7 +246,7 @@ impl TaskQueue {
             result.push(task);
         }
 
-        Ok(result)
+        result
     }
 
     /// Returns current threads count

@@ -1,6 +1,6 @@
 [package]
 name = "task_queue"
-version = "0.0.2"
+version = "0.0.3"
 authors = ["Nirklav <antonvictorovich93@gmail.com>"]
 description = "The implementation of the thread pool for Rust"
 repository = "https://github.com/Nirklav/task_queue"

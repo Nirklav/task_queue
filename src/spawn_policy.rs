@@ -6,7 +6,7 @@
 use super::TaskQueue;
 
 pub trait SpawnPolicy {
-    /// Returns current number of treads.
+    /// Returns current number of threads.
     fn get_count(&self, queue: &TaskQueue) -> usize;
 }
 
