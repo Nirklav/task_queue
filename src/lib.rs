@@ -8,7 +8,7 @@
 //! let mut queue = task_queue::TaskQueue::new();
 //!
 //! for _ in 0..10 {
-//!    queue.enqueue(move || {
+//!    queue.enqueue(|| {
 //!        println!("Hi from pool")
 //!    }).unwrap();
 //! }
