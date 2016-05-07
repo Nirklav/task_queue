@@ -13,7 +13,7 @@ fn test_work() {
     let mut queue = TaskQueue::new();
     for _ in 0..20 {
         let sender_clone = sender.clone();
-
+       
         queue.enqueue(move || {
             sender_clone.send(()).unwrap();
         }).unwrap();

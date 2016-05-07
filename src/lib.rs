@@ -21,14 +21,14 @@
 //! For example StaticSpawnPolicy implementation:
 //! # Example
 //! ```
-//! use task_queue::TaskQueue;
+//! use task_queue::TaskQueueStats;
 //! use task_queue::spawn_policy::SpawnPolicy;
 //!
 //! pub struct StaticSpawnPolicy;
 //!
 //! impl SpawnPolicy for StaticSpawnPolicy {
-//!     fn get_count(&self, queue: &TaskQueue) -> usize {
-//!         queue.get_max_threads()
+//!     fn get_count(&mut self, stats: TaskQueueStats) -> usize {
+//!         stats.threads_max
 //!     }
 //! }
 //! #
@@ -63,12 +63,12 @@ pub struct TaskQueue {
 
 impl TaskQueue {
     /// Create new task queue with 10 threads
-    pub fn new() -> TaskQueue {
+    pub fn new() -> Self {
         TaskQueue::with_threads(10, 10)
     }
 
     /// Create new task quque with selected threads count
-    pub fn with_threads(min: usize, max: usize) -> TaskQueue {
+    pub fn with_threads(min: usize, max: usize) -> Self {
         TaskQueue {
             sender: Sender::<Message>::new(),
             policy: Box::new(StaticSpawnPolicy::new()),
@@ -80,6 +80,7 @@ impl TaskQueue {
     }
 
     /// Schedule task in queue
+    /// # Example
     /// ``` rust
     /// extern crate task_queue;
     ///
@@ -96,23 +97,25 @@ impl TaskQueue {
         let task = Task { value: Box::new(f) };
         self.sender.put(Message::Task(task));
 
-        let count = self.policy.get_count(self);
+        let stats = TaskQueueStats::new(self);
+        let count = self.policy.get_count(stats);
         let mut runned = self.threads.len();
 
-        if count > runned {
-            for _ in runned..count {
-                let info = try!(self.build_and_run());
-                self.threads.push(info);
+        loop {
+            if runned == count {
+                break;
             }
-        } else {
-            loop {
-                if runned == count {
-                    break;
-                }
 
+            if runned > count {
                 let info = self.threads.remove(0);
                 self.sender.put_with_priority(Some(info.reciver), Priority::High, Message::CloseThread);
+
                 runned -= 1;
+            } else {
+                let info = try!(self.build_and_run());
+                self.threads.push(info);
+
+                runned += 1;
             }
         }
 
@@ -249,24 +252,24 @@ impl TaskQueue {
         result
     }
 
+    /// Sets a policy for controlling the amount of threads
+    pub fn set_spawn_policy(&mut self, policy: Box<SpawnPolicy>) {
+        self.policy = policy;
+    }
+
     /// Returns current threads count
     pub fn get_threads_count(&self) -> usize {
         self.threads.len()
     }
 
     /// Return max threads count
-    pub fn get_max_threads(&self) -> usize {
+    pub fn get_threads_max(&self) -> usize {
         self.max_threads
     }
 
     /// Return min threads count
-    pub fn get_min_threads(&self) -> usize {
+    pub fn get_threads_min(&self) -> usize {
         self.min_threads
-    }
-
-    /// Sets a policy for controlling the amount of threads
-    pub fn set_spawn_policy(&mut self, policy: Box<SpawnPolicy>) {
-        self.policy = policy;
     }
 
     /// Gets tasks count in queue
@@ -308,5 +311,23 @@ pub struct Task {
 impl Task {
     pub fn run(&self) {
         (self.value)();
+    }
+}
+
+pub struct TaskQueueStats {
+    pub threads_count: usize,
+    pub threads_max: usize,
+    pub threads_min: usize,
+    pub tasks_count: usize,
+}
+
+impl TaskQueueStats {
+    fn new(queue: &TaskQueue) -> Self {
+        TaskQueueStats {
+            threads_count: queue.get_threads_count(),
+            threads_max: queue.get_threads_max(),
+            threads_min: queue.get_threads_min(),
+            tasks_count: queue.tasks_count(),
+        }
     }
 }
