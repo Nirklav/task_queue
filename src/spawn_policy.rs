@@ -12,6 +12,15 @@ pub trait SpawnPolicy {
     fn get_count(&mut self, stats: TaskQueueStats) -> usize;
 }
 
+/// For const threads count.
+/// # Examples
+/// ``` rust
+/// extern crate task_queue;
+///
+/// let mut queue = task_queue::TaskQueue::new();
+/// let boxed_policy = Box::new(task_queue::spawn_policy::StaticSpawnPolicy::new());
+/// queue.set_spawn_policy(boxed_policy);
+/// ```
 pub struct StaticSpawnPolicy;
 
 impl StaticSpawnPolicy {
@@ -26,6 +35,15 @@ impl SpawnPolicy for StaticSpawnPolicy {
     }
 }
 
+/// For dynamic threads count.
+/// # Examples
+/// ``` rust
+/// extern crate task_queue;
+///
+/// let mut queue = task_queue::TaskQueue::new();
+/// let boxed_policy = Box::new(task_queue::spawn_policy::DynamicSpawnPolicy::new());
+/// queue.set_spawn_policy(boxed_policy);
+/// ```
 pub struct DynamicSpawnPolicy {
     stats: PolicyStats,
     last_change: SystemTime,
@@ -34,10 +52,14 @@ pub struct DynamicSpawnPolicy {
 
 impl DynamicSpawnPolicy {
     pub fn new() -> Self {
+        Self::with_delta(Duration::from_secs(60 * 5))
+    }
+
+    pub fn with_delta(delta: Duration) -> Self {
         DynamicSpawnPolicy {
             stats: PolicyStats::new(),
             last_change: SystemTime::now(),
-            delta: Duration::from_secs(60 * 5),
+            delta: delta,
         }
     }
 }
@@ -55,9 +77,9 @@ impl SpawnPolicy for DynamicSpawnPolicy {
             return stats.threads_count;
         }
 
-        const TASKS_UP: usize = 10;
-        const TASKS_FREQ_UP: usize = 10;
-        const TASKS_DOWN: usize = 0;
+        const TASKS_IN_QUEUE_UP: usize = 10;
+        const TASKS_IN_QUEUE_DOWN: usize = 0;
+        const TASKS_ADD_FREQ_UP: usize = 5;
         const DELTA_COUNT: usize = 1;
 
         let calls_per_sec = match self.stats.calls_per_sec() {
@@ -65,17 +87,19 @@ impl SpawnPolicy for DynamicSpawnPolicy {
             None => return stats.threads_count,
         };
 
-        let freq_for_up = calls_per_sec > TASKS_FREQ_UP;
-        let tasks_count = stats.tasks_count > TASKS_UP;
+        let freq_for_up = calls_per_sec > TASKS_ADD_FREQ_UP;
+        let tasks_for_up = stats.tasks_count > TASKS_IN_QUEUE_UP;
+        let tasks_for_down = stats.tasks_count <= TASKS_IN_QUEUE_DOWN;
         let not_max_threads = stats.threads_count < stats.threads_max;
+        let not_min_threads = stats.threads_count > stats.threads_min;
 
-        if freq_for_up && tasks_count && not_max_threads {
+        if freq_for_up && tasks_for_up && not_max_threads {
             self.stats.reset();
             self.last_change = SystemTime::now();
             return stats.threads_count + DELTA_COUNT;
         }
 
-        if stats.tasks_count <= TASKS_DOWN && stats.threads_count > stats.threads_min {
+        if tasks_for_down && not_min_threads {
             self.stats.reset();
             self.last_change = SystemTime::now();
             return stats.threads_count - DELTA_COUNT;
@@ -122,7 +146,12 @@ impl PolicyStats {
             Err(_) => return None
         };
 
-        Some(self.calls_count / elapsed.as_secs() as usize)
+        let elapsed_sec = elapsed.as_secs() as usize;
+        if elapsed_sec == 0 {
+            return None;
+        }
+
+        Some(self.calls_count / elapsed_sec)
     }
 }
 
@@ -132,7 +161,9 @@ mod test {
     use std::time::Duration;
 
     use super::DynamicSpawnPolicy;
+    use super::SpawnPolicy;
     use super::PolicyStats;
+    use super::super::TaskQueueStats;
 
     #[test]
     fn test_policy_stats_increment() {
@@ -140,10 +171,47 @@ mod test {
 
         for _ in 0..20 {
             stats.increment();
+
             thread::sleep(Duration::from_millis(100));
         }
 
         let calls = stats.calls_per_sec().expect("Value not exist");
         assert_eq!(calls, 10);
+    }
+
+    #[test]
+    fn test_dynamic_policy_up() {
+        let mut stats = TaskQueueStats::empty();
+        stats.threads_count = 5;
+        stats.threads_max = 10;
+        stats.threads_min = 5;
+        stats.tasks_count = 11;
+
+        let mut policy = DynamicSpawnPolicy::with_delta(Duration::from_millis(100));
+
+        for _ in 0..100 {
+            stats.threads_count = policy.get_count(stats);
+            thread::sleep(Duration::from_millis(100));
+        }
+
+        assert_eq!(stats.threads_count, 10);
+    }
+
+    #[test]
+    fn test_dynamic_policy_down() {
+        let mut stats = TaskQueueStats::empty();
+        stats.threads_count = 10;
+        stats.threads_max = 10;
+        stats.threads_min = 5;
+        stats.tasks_count = 0;
+
+        let mut policy = DynamicSpawnPolicy::with_delta(Duration::from_millis(100));
+
+        for _ in 0..100 {
+            stats.threads_count = policy.get_count(stats);
+            thread::sleep(Duration::from_millis(100));
+        }
+
+        assert_eq!(stats.threads_count, 5);
     }
 }

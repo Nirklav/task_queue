@@ -206,8 +206,7 @@ impl TaskQueue {
             .collect()
     }
 
-    /// Stops tasks queue work immediately and return are not completed tasks
-    /// Stops tasks queue work.
+    /// Stops tasks queue work immediately and return are not completed tasks.
     /// # Examples
     /// ``` rust
     /// extern crate task_queue;
@@ -314,6 +313,7 @@ impl Task {
     }
 }
 
+#[derive(Clone, Copy)]
 pub struct TaskQueueStats {
     pub threads_count: usize,
     pub threads_max: usize,
@@ -328,6 +328,15 @@ impl TaskQueueStats {
             threads_max: queue.get_threads_max(),
             threads_min: queue.get_threads_min(),
             tasks_count: queue.tasks_count(),
+        }
+    }
+
+    pub fn empty() -> Self {
+        TaskQueueStats {
+            threads_count: 0,
+            threads_max: 0,
+            threads_min: 0,
+            tasks_count: 0
         }
     }
 }
