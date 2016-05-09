@@ -1,10 +1,13 @@
 extern crate task_queue;
 
 use std::sync::mpsc;
-use std::sync::{ Arc, Barrier };
+use std::sync::{ Arc, Barrier, Condvar, Mutex };
 use std::sync::atomic::{ AtomicUsize, Ordering };
+use std::thread;
+use std::time::Duration;
 
 use task_queue::TaskQueue;
+use task_queue::spawn_policy::DynamicSpawnPolicy;
 
 #[test]
 fn test_work() {
@@ -13,7 +16,7 @@ fn test_work() {
     let mut queue = TaskQueue::new();
     for _ in 0..20 {
         let sender_clone = sender.clone();
-       
+
         queue.enqueue(move || {
             sender_clone.send(()).unwrap();
         }).unwrap();
@@ -96,4 +99,60 @@ fn test_stop_immediately() {
 
     let num = data.load(Ordering::Relaxed);
     assert_eq!(num, 20);
+}
+
+#[test]
+#[ignore]
+fn test_dynamic_policy_up() {
+    let queue = test_dynamic_policy(100, 10);
+
+    assert_eq!(queue.get_threads_count(), 10);
+    queue.stop_wait();
+}
+
+#[test]
+#[ignore]
+fn test_dynamic_policy_down() {
+    let queue = test_dynamic_policy(10, 100);
+
+    assert_eq!(queue.get_threads_count(), 5);
+    queue.stop_wait();
+}
+
+fn test_dynamic_policy(task_delay: u64, enqueue_delay: u64) -> TaskQueue {
+    const TASKS_COUNT : usize = 1000;
+    const POLICY_DELTA : u64 = 1000;
+
+    let mut queue = TaskQueue::with_threads(5, 10);
+    let condvar = Arc::new(Condvar::new());
+    let countdown = Arc::new(Mutex::new(TASKS_COUNT));
+
+    let policy = Box::new(DynamicSpawnPolicy::with_delta(Duration::from_millis(POLICY_DELTA)));
+    queue.set_spawn_policy(policy);
+
+    for _ in 0..TASKS_COUNT {
+        let countdown_clone = countdown.clone();
+        let condvar_clone = condvar.clone();
+
+        queue.enqueue(move || {
+            thread::sleep(Duration::from_millis(task_delay));
+
+            let mut guard = countdown_clone.lock().unwrap();
+            *guard -= 1;
+            if *guard == 0 {
+                condvar_clone.notify_one();
+            }
+        }).unwrap();
+
+        thread::sleep(Duration::from_millis(enqueue_delay));
+    }
+
+    {
+        let mut guard = countdown.lock().unwrap();
+        while *guard != 0 {
+            guard = condvar.wait(guard).unwrap();
+        }
+    }
+
+    queue
 }

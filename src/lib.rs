@@ -62,13 +62,29 @@ pub struct TaskQueue {
 }
 
 impl TaskQueue {
-    /// Create new task queue with 10 threads
+    /// Create new task queue with 10 threads.
     pub fn new() -> Self {
         TaskQueue::with_threads(10, 10)
     }
 
-    /// Create new task quque with selected threads count
+    /// Create new task quque with selected threads count.
+    /// # Panics
+    /// When min <= 0
+    /// When max <= 0
+    /// When max < min
     pub fn with_threads(min: usize, max: usize) -> Self {
+        if min <= 0 {
+            panic!("min threads equals or less zero");
+        }
+
+        if max <= 0 {
+            panic!("max threads equals or less zero");
+        }
+
+        if max < min {
+            panic!("max less than min");
+        }
+
         TaskQueue {
             sender: Sender::<Message>::new(),
             policy: Box::new(StaticSpawnPolicy::new()),
@@ -99,6 +115,10 @@ impl TaskQueue {
 
         let stats = TaskQueueStats::new(self);
         let count = self.policy.get_count(stats);
+        if self.min_threads > count || count > self.max_threads {
+            panic!("policy returned illegal number of threads min:{} max:{} count:{}", self.min_threads, self.max_threads, count);
+        }
+
         let mut runned = self.threads.len();
 
         loop {
