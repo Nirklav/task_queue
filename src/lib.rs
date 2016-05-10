@@ -70,7 +70,9 @@ impl TaskQueue {
     /// Create new task quque with selected threads count.
     /// # Panics
     /// When min <= 0
+    ///
     /// When max <= 0
+    ///
     /// When max < min
     pub fn with_threads(min: usize, max: usize) -> Self {
         if min <= 0 {
@@ -109,6 +111,8 @@ impl TaskQueue {
     /// }
     /// # queue.stop_wait();
     /// ```
+    /// # Panics
+    /// If spawn policy returned illegal number of threads.
     pub fn enqueue<F>(&mut self, f: F) -> Result<(), TaskQueueError> where F: Fn() + Send + 'static, {
         let task = Task { value: Box::new(f) };
         self.sender.put(Message::Task(task));

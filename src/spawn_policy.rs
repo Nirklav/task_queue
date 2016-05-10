@@ -60,7 +60,7 @@ impl DynamicSpawnPolicy {
     }
 
     /// Create policy that provide dynamic number of threads for queue.
-    /// Plicy will trying to change number of threads no more often delta.
+    /// Policy will trying to change number of threads no more often delta.
     pub fn with_delta(delta: Duration) -> Self {
         DynamicSpawnPolicy {
             stats: PolicyStats::new(),
