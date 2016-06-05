@@ -41,6 +41,8 @@ pub mod spawn_policy;
 mod pipe;
 
 use std::thread::{ JoinHandle, Builder };
+use std::panic;
+use std::panic:: { RefUnwindSafe };
 
 use error::TaskQueueError;
 use pipe::Sender;
@@ -164,7 +166,9 @@ impl TaskQueue {
         loop {
             let message = reciver.get();
             match message {
-                Message::Task(t) => t.run(),
+                Message::Task(t) => {
+                    let _ = panic::catch_unwind(|| t.run());
+                },
                 Message::CloseThread => return,
             }
         }
@@ -328,13 +332,17 @@ enum Message {
 }
 
 pub struct Task {
-    value: Box<Fn() + Send + 'static>,
+    value: Box<Fn() + Send>,
 }
 
 impl Task {
     pub fn run(&self) {
         (self.value)();
     }
+}
+
+impl RefUnwindSafe for Task {
+
 }
 
 #[derive(Clone, Copy)]
