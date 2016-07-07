@@ -8,6 +8,10 @@ use std::time::Duration;
 
 use task_queue::TaskQueue;
 use task_queue::spawn_policy::DynamicSpawnPolicy;
+use task_queue::spawn_policy::ManualSpawnPolicy;
+use task_queue::spawn_policy::ManualSpawnPolicyController;
+use task_queue::spawn_policy::SpawnPolicy;
+use task_queue::TaskQueueStats;
 
 #[test]
 fn test_work() {
@@ -29,7 +33,7 @@ fn test_work() {
 
 #[test]
 fn test_stop_and_wait() {
-    let mut queue = task_queue::TaskQueue::new();
+    let mut queue = TaskQueue::new();
 
     for _ in 0..10 {
        queue.enqueue(move || {
@@ -155,4 +159,29 @@ fn test_dynamic_policy(task_delay: u64, enqueue_delay: u64) -> TaskQueue {
     }
 
     queue
+}
+
+#[test]
+fn test_dynamic_close_thread() {
+    let mut queue = TaskQueue::with_threads(1, 2);
+
+    let mut policy = ManualSpawnPolicy::with_threads(1);
+    let mut controller = policy.get_controller();
+
+    queue.set_spawn_policy(Box::new(policy));
+    controller.add_thread(); // 2 threads
+
+    for _ in 0..10 {
+        queue.enqueue(|| {
+            // Long task
+        }).unwrap();
+    }
+
+    controller.remove_thread(); // 1 thread
+
+    queue.enqueue(|| {
+        // Quick task
+    });
+
+    queue.stop();
 }

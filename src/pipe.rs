@@ -39,7 +39,7 @@ impl<T> Sender<T> {
         }
 
         self.count.fetch_add(1, Ordering::SeqCst);
-        self.signal.notify_all();
+        self.signal.notify_one();
     }
 
     pub fn cancel_all(&self) -> Vec<T> {

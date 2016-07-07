@@ -5,6 +5,8 @@
 use std::time::SystemTime;
 use std::time::Duration;
 use std::cmp;
+use std::rc::Rc;
+use std::cell::RefCell;
 
 use super::TaskQueueStats;
 
@@ -162,6 +164,72 @@ impl PolicyStats {
         }
 
         Some(self.calls_count / elapsed_sec)
+    }
+}
+
+/// Policy that makes it possible control of the threads number manually
+/// # Examples
+/// ``` rust
+/// extern crate task_queue;
+///
+/// let mut queue = task_queue::TaskQueue::new();
+///
+/// let mut policy = task_queue::spawn_policy::ManualSpawnPolicy::new();
+/// let mut controller = policy.get_controller();
+///
+/// queue.set_spawn_policy(Box::new(policy));
+/// controller.add_thread();
+/// ```
+pub struct ManualSpawnPolicy {
+    threads_count: Rc<RefCell<usize>>
+}
+
+impl ManualSpawnPolicy {
+    /// Create policy with 10 threads
+    pub fn new() -> Self {
+        Self::with_threads(10)
+    }
+
+    /// Create policy with selected number of threads
+    pub fn with_threads(threads: usize) -> Self {
+        ManualSpawnPolicy {
+            threads_count: Rc::new(RefCell::new(threads))
+        }
+    }
+
+    /// Returns controller which makes possible control of the threads number
+    pub fn get_controller(&mut self) -> ManualSpawnPolicyController {
+        ManualSpawnPolicyController {
+            threads_count: self.threads_count.clone()
+        }
+    }
+}
+
+/// Controller which makes possible control of the threads number
+pub struct ManualSpawnPolicyController {
+    threads_count: Rc<RefCell<usize>>
+}
+
+impl ManualSpawnPolicyController {
+    /// Increase threads counter
+    pub fn add_thread(&mut self) {
+        *self.threads_count.borrow_mut() += 1;
+    }
+
+    /// Decrease threads counter
+    pub fn remove_thread(&mut self) {
+        *self.threads_count.borrow_mut() -= 1;
+    }
+}
+
+impl SpawnPolicy for ManualSpawnPolicy {
+    fn get_count(&mut self, stats: TaskQueueStats) -> usize {
+        let mut count = *self.threads_count.borrow();
+
+        count = cmp::min(count, stats.threads_max);
+        count = cmp::max(count, stats.threads_min);
+
+        count
     }
 }
 
