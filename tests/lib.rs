@@ -9,9 +9,6 @@ use std::time::Duration;
 use task_queue::TaskQueue;
 use task_queue::spawn_policy::DynamicSpawnPolicy;
 use task_queue::spawn_policy::ManualSpawnPolicy;
-use task_queue::spawn_policy::ManualSpawnPolicyController;
-use task_queue::spawn_policy::SpawnPolicy;
-use task_queue::TaskQueueStats;
 
 #[test]
 fn test_work() {
@@ -167,21 +164,26 @@ fn test_dynamic_close_thread() {
 
     let mut policy = ManualSpawnPolicy::with_threads(1);
     let mut controller = policy.get_controller();
+    let barrier = Arc::new(Barrier::new(3));
 
     queue.set_spawn_policy(Box::new(policy));
     controller.add_thread(); // 2 threads
 
-    for _ in 0..10 {
-        queue.enqueue(|| {
-            // Long task
+    for _ in 0..2 {
+        let barrier_clone = barrier.clone();
+        queue.enqueue(move || {
+            barrier_clone.wait();
         }).unwrap();
     }
 
     controller.remove_thread(); // 1 thread
 
-    queue.enqueue(|| {
-        // Quick task
-    });
+    queue.enqueue(|| {}).unwrap();
 
-    queue.stop();
+    let threads = queue.stop();
+
+    // should be 2 threads, because task in second closed thread still running
+    assert_eq!(threads.len(), 2);
+
+    barrier.wait();
 }

@@ -39,7 +39,14 @@ impl<T> Sender<T> {
         }
 
         self.count.fetch_add(1, Ordering::SeqCst);
-        self.signal.notify_one();
+
+        // if target is set, then we need notify all threads, that target thread be able to find message
+        // if target is unset, then we able notify only one thread
+        if target.is_some() {
+            self.signal.notify_all();
+        } else {
+            self.signal.notify_one();
+        }
     }
 
     pub fn cancel_all(&self) -> Vec<T> {
