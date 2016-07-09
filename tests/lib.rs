@@ -33,9 +33,7 @@ fn test_stop_and_wait() {
     let mut queue = TaskQueue::new();
 
     for _ in 0..10 {
-       queue.enqueue(move || {
-
-       }).unwrap();
+       queue.enqueue(|| { }).unwrap();
     }
 
     queue.stop_wait();
@@ -166,24 +164,43 @@ fn test_dynamic_close_thread() {
     let mut controller = policy.get_controller();
     let barrier = Arc::new(Barrier::new(3));
 
+
     queue.set_spawn_policy(Box::new(policy));
     controller.add_thread(); // 2 threads
 
     for _ in 0..2 {
         let barrier_clone = barrier.clone();
         queue.enqueue(move || {
+            // All treads start barrier
+            barrier_clone.wait();
+            // Release threads barrier
             barrier_clone.wait();
         }).unwrap();
     }
 
-    controller.remove_thread(); // 1 thread
+    // Wait for all tasks will be runned
+    barrier.wait();
 
+    // Set 1 thread
+    controller.remove_thread();
+
+    // One thread will be removed
     queue.enqueue(|| {}).unwrap();
 
+    let threads_count = queue.get_threads_count();
     let threads = queue.stop();
 
-    // should be 2 threads, because task in second closed thread still running
+    // Should be 1 thread, because second has closing state
+    assert_eq!(threads_count, 1);
+
+    // Should be 2 threads, because task in second closed thread still running
     assert_eq!(threads.len(), 2);
 
+    // Release threads
     barrier.wait();
+
+    // Wait
+    for handle in threads {
+        handle.join().unwrap();
+    }
 }

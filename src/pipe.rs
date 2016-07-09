@@ -56,7 +56,7 @@ impl<T> Sender<T> {
     }
 
     pub fn size(&self) -> usize {
-        self.count.load(Ordering::Relaxed)
+        self.count.load(Ordering::SeqCst)
     }
 }
 

@@ -40,9 +40,12 @@ pub mod error;
 pub mod spawn_policy;
 mod pipe;
 
+use std::ops::Index;
 use std::thread::{ JoinHandle, Builder };
 use std::panic;
 use std::panic:: { RefUnwindSafe };
+use std::sync::atomic::{ AtomicBool, Ordering };
+use std::sync::Arc;
 
 use error::TaskQueueError;
 use pipe::Sender;
@@ -60,6 +63,7 @@ pub struct TaskQueue {
     max_threads: usize,
 
     threads: Vec<ThreadInfo>,
+    closing_threads: Vec<ThreadInfo>,
     last_thread_id: i64
 }
 
@@ -95,6 +99,7 @@ impl TaskQueue {
             min_threads: min,
             max_threads: max,
             threads: Vec::new(),
+            closing_threads: Vec::new(),
             last_thread_id: 0
         }
     }
@@ -116,25 +121,26 @@ impl TaskQueue {
     /// # Panics
     /// If spawn policy returned illegal number of threads.
     pub fn enqueue<F>(&mut self, f: F) -> Result<(), TaskQueueError> where F: Fn() + Send + 'static, {
+        // Put task
         let task = Task { value: Box::new(f) };
         self.sender.put(Message::Task(task));
 
+        // Get threads count from policy
         let stats = TaskQueueStats::new(self);
         let count = self.policy.get_count(stats);
         if self.min_threads > count || count > self.max_threads {
             panic!("policy returned illegal number of threads min:{} max:{} count:{}", self.min_threads, self.max_threads, count);
         }
 
+        // Apply threads count if need
         let mut runned = self.threads.len();
-
-        loop {
-            if runned == count {
-                break;
-            }
-
+        while runned != count {
             if runned > count {
                 let info = self.threads.remove(0);
-                self.sender.put_with_priority(Some(info.reciver), Priority::High, Message::CloseThread);
+                let reciver = info.reciver.clone();
+
+                self.closing_threads.push(info);
+                self.sender.put_with_priority(Some(reciver), Priority::High, Message::CloseThread);
 
                 runned -= 1;
             } else {
@@ -145,6 +151,20 @@ impl TaskQueue {
             }
         }
 
+        // Check removed threads
+        for i in (0..self.closing_threads.len()).rev() {
+            let is_thread_closed: bool;
+            {
+                let info = self.closing_threads.index(i);
+                is_thread_closed = info.closed.load(Ordering::SeqCst);
+            }
+
+            if is_thread_closed {
+                self.closing_threads.remove(i);
+            }
+        }
+
+        // Result
         Ok(())
     }
 
@@ -154,22 +174,27 @@ impl TaskQueue {
         let name = format!("TaskQueue::thread {}", self.last_thread_id);
         let reciver = self.sender.create_reciver();
         let reciver_handle = reciver.handle();
+        let close_flag = Arc::new(AtomicBool::new(false));
+        let close_flag_clone = close_flag.clone();
 
         let handle = try!(Builder::new()
             .name(name)
-            .spawn(move || TaskQueue::thread_update(reciver)));
+            .spawn(move || Self::thread_update(close_flag_clone, reciver)));
 
-        Ok(ThreadInfo::new(reciver_handle, handle))
+        Ok(ThreadInfo::new(reciver_handle, handle, close_flag))
     }
 
-    fn thread_update(reciver: Reciver<Message>) {
+    fn thread_update(close_flag: Arc<AtomicBool>, reciver: Reciver<Message>) {
         loop {
             let message = reciver.get();
             match message {
                 Message::Task(t) => {
                     let _ = panic::catch_unwind(|| t.run());
                 },
-                Message::CloseThread => return,
+                Message::CloseThread => {
+                    close_flag.store(true, Ordering::SeqCst);
+                    return;
+                }
             }
         }
     }
@@ -223,13 +248,14 @@ impl TaskQueue {
     }
 
     fn stop_impl(&mut self) -> Vec<JoinHandle<()>> {
-        // Close threads only after all tasks
+        // Close threads only after all tasks (send message with min priority)
         for info in &self.threads {
             self.sender.put_with_priority(Some(info.reciver), Priority::Min, Message::CloseThread);
         }
 
         self.threads
             .drain(..)
+            .chain(self.closing_threads.drain(..))
             .map(|t| t.handle)
             .collect()
     }
@@ -252,12 +278,15 @@ impl TaskQueue {
     /// }
     /// ```
     pub fn stop_immediately(mut self) -> Vec<Task> {
-        let threads : Vec<ThreadInfo> = self.threads.drain(..).collect();
-
-        // Close threads immediately
-        for info in &threads {
+        // Close threads immediately (send message with high priority)
+        for info in &self.threads {
             self.sender.put_with_priority(Some(info.reciver), Priority::High, Message::CloseThread);
         }
+
+        let threads : Vec<ThreadInfo> = self.threads
+            .drain(..)
+            .chain(self.closing_threads.drain(..))
+            .collect();
 
         // Wait threads
         for info in threads {
@@ -315,13 +344,15 @@ impl Drop for TaskQueue {
 struct ThreadInfo {
     reciver: ReciverHandle,
     handle: JoinHandle<()>,
+    closed: Arc<AtomicBool>
 }
 
 impl ThreadInfo {
-    fn new(reciver: ReciverHandle, handle: JoinHandle<()>) -> ThreadInfo {
+    fn new(reciver: ReciverHandle, handle: JoinHandle<()>, close_flag: Arc<AtomicBool>) -> Self {
         ThreadInfo {
             reciver: reciver,
-            handle: handle
+            handle: handle,
+            closed: close_flag
         }
     }
 }
