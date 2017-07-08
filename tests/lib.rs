@@ -122,7 +122,7 @@ fn test_dynamic_policy(task_delay: u64, enqueue_delay: u64) -> TaskQueue {
     const TASKS_COUNT : usize = 1000;
     const POLICY_DELTA : u64 = 1000;
 
-    let mut queue = TaskQueue::with_threads(5, 10);
+    let mut queue = TaskQueue::with_threads(5, 10).expect("params is ok");
     let condvar = Arc::new(Condvar::new());
     let countdown = Arc::new(Mutex::new(TASKS_COUNT));
 
@@ -158,7 +158,7 @@ fn test_dynamic_policy(task_delay: u64, enqueue_delay: u64) -> TaskQueue {
 
 #[test]
 fn test_dynamic_close_thread() {
-    let mut queue = TaskQueue::with_threads(1, 2);
+    let mut queue = TaskQueue::with_threads(1, 2).expect("params is ok");
 
     let mut policy = ManualSpawnPolicy::with_threads(1);
     let mut controller = policy.get_controller();

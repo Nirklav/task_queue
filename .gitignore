@@ -1,3 +1,4 @@
 target
 .atom-build.json
 Cargo.lock
+.idea

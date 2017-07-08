@@ -1,11 +1,13 @@
 use std::sync::{ Arc, Condvar, Mutex };
 use std::sync::atomic::{ AtomicUsize, Ordering };
+use std::fmt;
+use std::fmt::{ Display, Formatter };
 
 pub struct Sender<T> {
     shared: Arc<Mutex<Vec<Message<T>>>>,
     count: Arc<AtomicUsize>,
     signal: Arc<Condvar>,
-    last_handle: ReciverHandle,
+    last_handle: ReceiverHandle,
 }
 
 impl<T> Sender<T> {
@@ -14,19 +16,19 @@ impl<T> Sender<T> {
             shared: Arc::new(Mutex::new(Vec::new())),
             count: Arc::new(AtomicUsize::new(0)),
             signal: Arc::new(Condvar::new()),
-            last_handle: ReciverHandle::new(),
+            last_handle: ReceiverHandle::new(),
         }
     }
 
-    pub fn create_reciver(&mut self) -> Reciver<T> {
-        Reciver::new(self)
+    pub fn create_receiver(&mut self) -> Receiver<T> {
+        Receiver::new(self)
     }
 
     pub fn put(&self, data: T) {
         self.put_with_priority(None, Priority::Normal, data);
     }
 
-    pub fn put_with_priority(&self, target: Option<ReciverHandle>, priority: Priority, data: T) {
+    pub fn put_with_priority(&self, target: Option<ReceiverHandle>, priority: Priority, data: T) {
         let msg = Message {
             target: target,
             priority: priority,
@@ -60,16 +62,16 @@ impl<T> Sender<T> {
     }
 }
 
-pub struct Reciver<T> {
-    handle: ReciverHandle,
+pub struct Receiver<T> {
+    handle: ReceiverHandle,
     shared: Arc<Mutex<Vec<Message<T>>>>,
     count: Arc<AtomicUsize>,
     signal: Arc<Condvar>,
 }
 
-impl<T> Reciver<T> {
-    fn new(sender: &mut Sender<T>) -> Reciver<T> {
-        Reciver {
+impl<T> Receiver<T> {
+    fn new(sender: &mut Sender<T>) -> Receiver<T> {
+        Receiver {
             handle: sender.last_handle.next(),
             shared: sender.shared.clone(),
             count: sender.count.clone(),
@@ -84,7 +86,7 @@ impl<T> Reciver<T> {
             let mut priority = Priority::Normal;
 
             for (i, msg) in guard.iter().enumerate() {
-                // Skip messages for other recivers
+                // Skip messages for other receivers
                 if let Some(ref target) = msg.target {
                     if target != &self.handle {
                         continue;
@@ -118,27 +120,33 @@ impl<T> Reciver<T> {
         }
     }
 
-    pub fn handle(&self) -> ReciverHandle {
+    pub fn handle(&self) -> ReceiverHandle {
         self.handle
     }
 }
 
 #[derive(Eq, PartialEq, Copy, Clone)]
-pub struct ReciverHandle {
+pub struct ReceiverHandle {
     id: i64,
 }
 
-impl ReciverHandle {
-    fn new() -> ReciverHandle {
-        ReciverHandle {
+impl ReceiverHandle {
+    fn new() -> ReceiverHandle {
+        ReceiverHandle {
             id: 0
         }
     }
 
-    fn next(&mut self) -> ReciverHandle {
+    fn next(&mut self) -> ReceiverHandle {
         let result = self.clone();
         self.id += 1;
         result
+    }
+}
+
+impl Display for ReceiverHandle {
+    fn fmt(&self, f: &mut Formatter) -> Result<(), fmt::Error> {
+        write!(f, "Receiver handle: {}", self.id)
     }
 }
 
@@ -150,7 +158,7 @@ pub enum Priority {
 }
 
 struct Message<T> {
-    target: Option<ReciverHandle>,
+    target: Option<ReceiverHandle>,
     priority: Priority,
     data: T,
 }
@@ -158,7 +166,7 @@ struct Message<T> {
 #[cfg(test)]
 mod test {
     use super::Sender;
-    use super::ReciverHandle;
+    use super::ReceiverHandle;
     use super::Priority;
     use std::thread;
     use std::thread::JoinHandle;
@@ -169,15 +177,15 @@ mod test {
     fn test_one_thread() {
         let mut sender = Sender::<i32>::new();
 
-        let reciver_one = sender.create_reciver();
-        let reciver_two = sender.create_reciver();
+        let receiver_one = sender.create_receiver();
+        let receiver_two = sender.create_receiver();
 
         sender.put(10);
-        let result_one = reciver_one.get();
+        let result_one = receiver_one.get();
         assert_eq!(result_one, 10);
 
         sender.put(20);
-        let result_two = reciver_two.get();
+        let result_two = receiver_two.get();
         assert_eq!(result_two, 20);
     }
 
@@ -192,14 +200,14 @@ mod test {
         }
 
         for _ in 0..10 {
-            let reciver = sender.create_reciver();
+            let receiver = sender.create_receiver();
             let sum_clone = sum.clone();
 
             let handle = thread::spawn(move || {
-                let recived = reciver.get();
+                let received = receiver.get();
 
                 let mut guard = sum_clone.lock().unwrap();
-                *guard += recived;
+                *guard += received;
             });
 
             threads.push(handle);
@@ -215,17 +223,17 @@ mod test {
     #[test]
     fn test_put_for() {
         let mut sender = Sender::<i32>::new();
-        let mut handles = Vec::<ReciverHandle>::new();
+        let mut handles = Vec::<ReceiverHandle>::new();
         let mut threads = Vec::<JoinHandle<()>>::new();
 
         for i in 0..10 {
-            let reciver = sender.create_reciver();
-            let reciver_handle = reciver.handle();
+            let receiver = sender.create_receiver();
+            let receiver_handle = receiver.handle();
             let handle = thread::spawn(move || {
-                assert_eq!(reciver.get(), i);
+                assert_eq!(receiver.get(), i);
             });
 
-            handles.push(reciver_handle);
+            handles.push(receiver_handle);
             threads.push(handle);
         }
 
@@ -243,19 +251,19 @@ mod test {
     #[test]
     fn test_put_for_priority() {
         let mut sender = Sender::<i32>::new();
-        let reciver = sender.create_reciver();
-        let reciver_handle = reciver.handle();
+        let receiver = sender.create_receiver();
+        let receiver_handle = receiver.handle();
 
         for i in 0..10 {
             sender.put(i);
         }
-        sender.put_with_priority(Some(reciver_handle), Priority::High, 300);
+        sender.put_with_priority(Some(receiver_handle), Priority::High, 300);
 
         let handle = thread::spawn(move || {
-            assert_eq!(300, reciver.get());
+            assert_eq!(300, receiver.get());
 
             for i in 0..10 {
-                assert_eq!(i, reciver.get());
+                assert_eq!(i, receiver.get());
             }
         });
 
@@ -270,11 +278,11 @@ mod test {
             sender.put(1);
         }
 
-        let reciver = sender.create_reciver();
+        let receiver = sender.create_receiver();
 
         let mut sum = 0;
         for _ in 0..5 {
-            sum += reciver.get();
+            sum += receiver.get();
         }
 
         let cancelled = sender.cancel_all();

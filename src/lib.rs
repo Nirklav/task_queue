@@ -49,8 +49,8 @@ use std::sync::Arc;
 
 use error::TaskQueueError;
 use pipe::Sender;
-use pipe::Reciver;
-use pipe::ReciverHandle;
+use pipe::Receiver;
+use pipe::ReceiverHandle;
 use pipe::Priority;
 use spawn_policy::SpawnPolicy;
 use spawn_policy::StaticSpawnPolicy;
@@ -63,45 +63,29 @@ pub struct TaskQueue {
     max_threads: usize,
 
     threads: Vec<ThreadInfo>,
-    closing_threads: Vec<ThreadInfo>,
-    last_thread_id: i64
+    closing_threads: Vec<ThreadInfo>
 }
 
 impl TaskQueue {
     /// Create new task queue with 10 threads.
     pub fn new() -> Self {
-        TaskQueue::with_threads(10, 10)
+        TaskQueue::with_threads(10, 10).expect("10 and 10 satisfy with_threads method validation")
     }
 
-    /// Create new task quque with selected threads count.
-    /// # Panics
-    /// When min <= 0
-    ///
-    /// When max <= 0
-    ///
-    /// When max < min
-    pub fn with_threads(min: usize, max: usize) -> Self {
-        if min <= 0 {
-            panic!("min threads equals or less zero");
+    /// Create new task queue with selected threads count.
+    pub fn with_threads(min: usize, max: usize) -> Result<Self, TaskQueueError> {
+        if min <= 0 || max <= 0 || max < min {
+            return Err(TaskQueueError::illegal_start_threads(min, max));
         }
 
-        if max <= 0 {
-            panic!("max threads equals or less zero");
-        }
-
-        if max < min {
-            panic!("max less than min");
-        }
-
-        TaskQueue {
+        Ok(TaskQueue {
             sender: Sender::<Message>::new(),
             policy: Box::new(StaticSpawnPolicy::new()),
             min_threads: min,
             max_threads: max,
             threads: Vec::new(),
-            closing_threads: Vec::new(),
-            last_thread_id: 0
-        }
+            closing_threads: Vec::new()
+        })
     }
 
     /// Schedule task in queue
@@ -129,7 +113,7 @@ impl TaskQueue {
         let stats = TaskQueueStats::new(self);
         let count = self.policy.get_count(stats);
         if self.min_threads > count || count > self.max_threads {
-            panic!("policy returned illegal number of threads min:{} max:{} count:{}", self.min_threads, self.max_threads, count);
+            return Err(TaskQueueError::illegal_policy_threads(self.min_threads, self.max_threads, count));
         }
 
         // Apply threads count if need
@@ -137,14 +121,14 @@ impl TaskQueue {
         while runned != count {
             if runned > count {
                 let info = self.threads.remove(0);
-                let reciver = info.reciver.clone();
+                let receiver = info.receiver.clone();
 
                 self.closing_threads.push(info);
-                self.sender.put_with_priority(Some(reciver), Priority::High, Message::CloseThread);
+                self.sender.put_with_priority(Some(receiver), Priority::High, Message::CloseThread);
 
                 runned -= 1;
             } else {
-                let info = try!(self.build_and_run());
+                let info = self.build_and_run()?;
                 self.threads.push(info);
 
                 runned += 1;
@@ -153,11 +137,10 @@ impl TaskQueue {
 
         // Check removed threads
         for i in (0..self.closing_threads.len()).rev() {
-            let is_thread_closed: bool;
-            {
+            let is_thread_closed = {
                 let info = self.closing_threads.index(i);
-                is_thread_closed = info.closed.load(Ordering::SeqCst);
-            }
+                info.closed.load(Ordering::SeqCst)
+            };
 
             if is_thread_closed {
                 self.closing_threads.remove(i);
@@ -169,24 +152,22 @@ impl TaskQueue {
     }
 
     fn build_and_run(&mut self) -> Result<ThreadInfo, TaskQueueError> {
-        self.last_thread_id += 1;
-
-        let name = format!("TaskQueue::thread {}", self.last_thread_id);
-        let reciver = self.sender.create_reciver();
-        let reciver_handle = reciver.handle();
+        let receiver = self.sender.create_receiver();
+        let receiver_handle = receiver.handle();
+        let name = format!("TaskQueue::thread {}", receiver_handle);
         let close_flag = Arc::new(AtomicBool::new(false));
         let close_flag_clone = close_flag.clone();
 
-        let handle = try!(Builder::new()
+        let handle = Builder::new()
             .name(name)
-            .spawn(move || Self::thread_update(close_flag_clone, reciver)));
+            .spawn(move || Self::thread_update(close_flag_clone, receiver))?;
 
-        Ok(ThreadInfo::new(reciver_handle, handle, close_flag))
+        Ok(ThreadInfo::new(receiver_handle, handle, close_flag))
     }
 
-    fn thread_update(close_flag: Arc<AtomicBool>, reciver: Reciver<Message>) {
+    fn thread_update(close_flag: Arc<AtomicBool>, receiver: Receiver<Message>) {
         loop {
-            let message = reciver.get();
+            let message = receiver.get();
             match message {
                 Message::Task(t) => {
                     let _ = panic::catch_unwind(|| t.run());
@@ -250,7 +231,7 @@ impl TaskQueue {
     fn stop_impl(&mut self) -> Vec<JoinHandle<()>> {
         // Close threads only after all tasks (send message with min priority)
         for info in &self.threads {
-            self.sender.put_with_priority(Some(info.reciver), Priority::Min, Message::CloseThread);
+            self.sender.put_with_priority(Some(info.receiver), Priority::Min, Message::CloseThread);
         }
 
         self.threads
@@ -280,7 +261,7 @@ impl TaskQueue {
     pub fn stop_immediately(mut self) -> Vec<Task> {
         // Close threads immediately (send message with high priority)
         for info in &self.threads {
-            self.sender.put_with_priority(Some(info.reciver), Priority::High, Message::CloseThread);
+            self.sender.put_with_priority(Some(info.receiver), Priority::High, Message::CloseThread);
         }
 
         let threads : Vec<ThreadInfo> = self.threads
@@ -342,15 +323,15 @@ impl Drop for TaskQueue {
 }
 
 struct ThreadInfo {
-    reciver: ReciverHandle,
+    receiver: ReceiverHandle,
     handle: JoinHandle<()>,
     closed: Arc<AtomicBool>
 }
 
 impl ThreadInfo {
-    fn new(reciver: ReciverHandle, handle: JoinHandle<()>, close_flag: Arc<AtomicBool>) -> Self {
+    fn new(receiver: ReceiverHandle, handle: JoinHandle<()>, close_flag: Arc<AtomicBool>) -> Self {
         ThreadInfo {
-            reciver: reciver,
+            receiver: receiver,
             handle: handle,
             closed: close_flag
         }
